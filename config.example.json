@@ -1,0 +1,6 @@
+{
+  "schema_version": 1,
+  "sender": "sender@example.invalid",
+  "recipient": "recipient@example.invalid",
+  "project_binding": "resetmonitor-default"
+}

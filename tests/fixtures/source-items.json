@@ -1,0 +1,71 @@
+[
+  {
+    "inputType": "profile",
+    "normalizedInput": "thsottiaux",
+    "success": true,
+    "status": "success",
+    "tweetId": "9000000000000000003",
+    "url": null,
+    "text": "Synthetic source sample 1: complete text for an offline test.",
+    "createdAt": "2026-10-11T05:22:48.000Z",
+    "authorId": "1953337039510003712",
+    "authorUsername": null,
+    "isReply": false,
+    "isRetweet": false,
+    "isQuote": false,
+    "inReplyToTweetId": null,
+    "inReplyToUsername": null,
+    "author": {
+      "id": "1953337039510003712",
+      "username": null
+    },
+    "quotedTweet": null,
+    "retweetedTweet": null
+  },
+  {
+    "inputType": "profile",
+    "normalizedInput": "thsottiaux",
+    "success": true,
+    "status": "success",
+    "tweetId": "9000000000000000002",
+    "url": null,
+    "text": "Synthetic source sample 2: complete text for an offline test.",
+    "createdAt": "2026-10-11T04:01:09.000Z",
+    "authorId": "1953337039510003712",
+    "authorUsername": null,
+    "isReply": false,
+    "isRetweet": false,
+    "isQuote": true,
+    "inReplyToTweetId": null,
+    "inReplyToUsername": null,
+    "author": {
+      "id": "1953337039510003712",
+      "username": null
+    },
+    "quotedTweet": null,
+    "retweetedTweet": null
+  },
+  {
+    "inputType": "profile",
+    "normalizedInput": "thsottiaux",
+    "success": true,
+    "status": "success",
+    "tweetId": "9000000000000000001",
+    "url": null,
+    "text": "Synthetic source sample 3: complete text for an offline test.",
+    "createdAt": "2026-10-11T01:13:54.000Z",
+    "authorId": "1953337039510003712",
+    "authorUsername": null,
+    "isReply": false,
+    "isRetweet": false,
+    "isQuote": true,
+    "inReplyToTweetId": null,
+    "inReplyToUsername": null,
+    "author": {
+      "id": "1953337039510003712",
+      "username": null
+    },
+    "quotedTweet": null,
+    "retweetedTweet": null
+  }
+]

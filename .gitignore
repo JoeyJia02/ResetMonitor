@@ -1,0 +1,55 @@
+# Credentials
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+config.local.json
+config.local.json.*
+*.pfx
+*.p12
+*cookies*.json
+
+# Runtime state and local diagnostics
+state.json
+state.json.*
+*.lock
+logs/
+runtime/
+artifacts/
+*.log
+evidence/
+SOURCE_FINGERPRINTS*.json
+*.lnk
+.claude/
+.codex/
+.agents/
+
+# Private project history and task bindings (retained locally)
+/AGENTS.md
+/PROJECT_STATUS.md
+/TASKS.md
+/DECISIONS.md
+/TECHNICAL_PLAN.md
+/TEST_RESULTS.md
+/BACKGROUND_*.md
+/REPAIR_*.md
+
+# One-off recovery of private historical run receipts
+/scripts/resume_failed_full_chain.py
+/tests/test_full_chain_recovery.py
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Editor / OS
+.idea/
+.vscode/
+Thumbs.db
+Desktop.ini

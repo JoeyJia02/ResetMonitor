@@ -1,0 +1,3 @@
+#!/bin/sh
+# Check the exact staged blobs; the tool never echoes a matched secret.
+exec python -B scripts/check_publication.py

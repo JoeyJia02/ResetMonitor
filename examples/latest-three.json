@@ -1,0 +1,12 @@
+{
+  "tweets": [
+    {"id": "103", "author": "thsottiaux", "text": "Offline example: the extra refill is confirmed.", "url": "https://x.com/thsottiaux/status/103", "created_at": "2026-10-10T03:00:00Z"},
+    {"id": "102", "author": "thsottiaux", "text": "Offline example: a new code review feature.", "url": "https://x.com/thsottiaux/status/102", "created_at": "2026-10-10T02:00:00Z"},
+    {"id": "101", "author": "thsottiaux", "text": "Offline example: another extra refill is coming soon.", "url": "https://x.com/thsottiaux/status/101", "created_at": "2026-10-10T01:00:00Z"}
+  ],
+  "classifications": {
+    "101": {"label": "PRE_RESET", "confidence": 0.95, "reset_time": null, "reason": "Fixed offline example of a future extra reset."},
+    "102": {"label": "IRRELEVANT", "confidence": 0.98, "reset_time": null, "reason": "Fixed offline example of a feature update."},
+    "103": {"label": "POST_RESET", "confidence": 0.96, "reset_time": null, "reason": "Fixed offline example of a completed extra reset."}
+  }
+}

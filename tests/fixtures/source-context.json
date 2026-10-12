@@ -1,0 +1,62 @@
+{
+  "items": [
+    {
+      "id": "9000000000000000003",
+      "text": "Synthetic source sample 1: complete text for an offline test.",
+      "created_at": "2026-10-11T05:22:48Z",
+      "author": {
+        "id": "1953337039510003712",
+        "username": "thsottiaux"
+      },
+      "quoted_tweet": null,
+      "poll": {
+        "card_name": "poll3choice_text_only",
+        "options": [
+          "Synthetic option A",
+          "Synthetic option B",
+          "Show test results"
+        ],
+        "end_datetime_utc": "2026-10-11T17:22:47Z",
+        "counts_are_final": false
+      }
+    },
+    {
+      "id": "9000000000000000002",
+      "text": "Synthetic source sample 2: complete text for an offline test.",
+      "created_at": "2026-10-11T04:01:09Z",
+      "author": {
+        "id": "1953337039510003712",
+        "username": "thsottiaux"
+      },
+      "quoted_tweet": {
+        "id": "8000000000000000001",
+        "text": "Synthetic quoted context: an extra reset is planned; time unknown.",
+        "created_at": "2026-10-10T22:16:20Z",
+        "author": {
+          "id": "1953337039510003712",
+          "username": "thsottiaux"
+        }
+      },
+      "poll": null
+    },
+    {
+      "id": "9000000000000000001",
+      "text": "Synthetic source sample 3: complete text for an offline test.",
+      "created_at": "2026-10-11T01:13:54Z",
+      "author": {
+        "id": "1953337039510003712",
+        "username": "thsottiaux"
+      },
+      "quoted_tweet": {
+        "id": "8000000000000000001",
+        "text": "Synthetic quoted context: an extra reset is planned; time unknown.",
+        "created_at": "2026-10-10T22:15:39Z",
+        "author": {
+          "id": "1953337039510003712",
+          "username": "thsottiaux"
+        }
+      },
+      "poll": null
+    }
+  ]
+}
