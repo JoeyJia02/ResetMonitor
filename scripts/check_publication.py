@@ -33,7 +33,8 @@ def private_path(name):
     filename = path.name
     lower = filename.lower()
     return (any(part.lower() in PRIVATE_DIRECTORIES for part in path.parts)
-            or lower in {item.lower() for item in PRIVATE_NAMES}
+            or (lower in {item.lower() for item in PRIVATE_NAMES} and lower != "agents.md")
+            or name.lower() == "agents.md"
             or name in PRIVATE_SCRIPTS
             or lower.startswith("config.local.json.")
             or lower.startswith(("source_fingerprints", "background_", "repair_"))

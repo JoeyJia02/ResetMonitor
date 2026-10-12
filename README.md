@@ -67,6 +67,8 @@ python -B scripts/check_publication.py
 
 测试使用模拟传输和合成数据，不调用真实 API 或 SMTP。发布检查读取 **Git 暂存区**，检查误加入的私人文件、邮箱和常见密钥格式；它不替代代码审查，也不检查远端历史。详见 [测试说明](TEST_PLAN.md) 和 [隐私说明](PRIVACY.md)。
 
+GitHub PR 自动审查的配置步骤与项目规则见 [Code Review](CODE_REVIEW.md)。云端开关需要在仓库创建并连接后设置。
+
 ## 目录
 
 - `monitor/`：来源、分类、邮件、凭据、状态与界面组件。

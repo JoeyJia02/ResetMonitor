@@ -17,7 +17,8 @@ class PublicationTests(unittest.TestCase):
                 self.assertEqual(audit.scan_blob(name, b"{}"), [audit.Finding(name, 0, "PRIVATE_FILE")])
 
     def test_templates_and_examples_are_allowed(self):
-        for name in ("config.example.json", ".env.example", "monitor/settings_gui.py"):
+        for name in ("config.example.json", ".env.example", "monitor/settings_gui.py",
+                     "monitor/AGENTS.md", "scripts/AGENTS.md"):
             self.assertFalse(audit.scan_blob(name, b"sender@example.com recipient@example.invalid"))
 
     def test_non_example_email_and_tokens_are_detected_without_echo(self):
