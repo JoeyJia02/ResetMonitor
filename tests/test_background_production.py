@@ -1,5 +1,7 @@
 """Regression checks against the actual scheduled entry point, with no live IO."""
 from datetime import datetime, timezone
+from email import policy
+from email.parser import BytesParser
 import json
 import os
 from pathlib import Path
@@ -15,7 +17,7 @@ from scripts import background_monitor as monitor
 from scripts.one_shot_source import OneShotSourceError
 from tests.test_background_monitor import model_response
 from tests.test_one_shot_source import Response, Transport, official_embed
-from tests.test_smtp_transport import FakeFactory
+from tests.test_smtp_transport import FakeFactory, FakeSession
 
 PROJECT = Path(__file__).resolve().parents[1]
 ROOT = Path(os.environ.get("RESET_MONITOR_TEST_ROOT", str(PROJECT / "runtime" / "test-tmp"))).resolve()
@@ -34,6 +36,11 @@ class BackgroundProductionTests(unittest.TestCase):
             deepseek_api_key="SYNTHETIC_MODEL_KEY", smtp_user=LOCAL_SENDER,
             smtp_password="abcdefghijklmnop")
         self.factory = FakeFactory()
+        self.source_calls = 0
+        self.tweets = [{"id": str(2109152716954222850 + index),
+            "created_at": "2026-10-12T00:00:00Z", "text": "合成推文" + str(index),
+            "url": "https://x.com/thsottiaux/status/" + str(2109152716954222850 + index)}
+            for index in range(3)]
 
     def cleanup(self):
         target = self.root.resolve()
@@ -41,12 +48,19 @@ class BackgroundProductionTests(unittest.TestCase):
             raise AssertionError("UNSAFE_TEST_CLEANUP")
         shutil.rmtree(target)
 
-    def run_at(self, transport, **changes):
+    def fetch(self, *_):
+        self.source_calls += 1
+        return self.tweets, {"source_posts": 1}
+
+    def message(self, index=-1):
+        return BytesParser(policy=policy.default).parsebytes(self.factory.session.payloads[index][:-3])
+
+    def run_at(self, transport, *, now=NOW, **changes):
         args = dict(root=self.root, credential_loader=lambda: self.credentials,
                     transport=transport, smtp_factory=self.factory,
                     chain_lock=self.root / "chain.lock", manual_results_root=self.root / "manual")
         args.update(changes)
-        return monitor.run_slot(NOW, **args)
+        return monitor.run_slot(now, **args)
 
     def test_long_note_reaches_model_with_complete_text_and_no_duplicate_calls(self):
         rows = json.loads((PROJECT / "tests/fixtures/source-items.json").read_text("utf-8"))
@@ -62,8 +76,96 @@ class BackgroundProductionTests(unittest.TestCase):
         model_request = json.loads(transport.calls[-1][0].data)
         self.assertIn(rows[0]["text"], json.dumps(model_request, ensure_ascii=False).replace("\\n", "\n"))
         self.assertEqual(len(self.factory.calls), 1)
+        message = self.message()
+        for row in rows:
+            self.assertIn(row["text"], message.get_content())
+        self.assertIn("IRRELEVANT", message.get_content())
+        self.assertIn("PRE_RESET", message.get_content())
+        self.assertIn("POST_RESET", message.get_content())
+        self.assertIn("涉及额外重置条数：2", message.get_content())
+        self.assertIn("额外重置通告", str(message["Subject"]))
         self.assertEqual(self.run_at(transport), result)
         self.assertEqual((len(transport.calls), len(self.factory.calls)), (5, 1))
+
+    def test_all_irrelevant_are_mailed_once_with_all_text_and_classifications(self):
+        transport = Transport([model_response(("IRRELEVANT",) * 3)])
+        result = self.run_at(transport, source_fetch=self.fetch)
+        self.assertEqual((result["status"], result["captured_items"], result["analyzed_items"],
+                          result["relevant_items"], result["smtp_status"], result["stage"]),
+                         ("SENT", 3, 3, 0, "SENT", "COMPLETE"))
+        message = self.message()
+        self.assertIn("暂无相关公告", str(message["Subject"]))
+        self.assertNotIn("额外重置通告", str(message["Subject"]))
+        for row in self.tweets:
+            self.assertIn(row["text"], message.get_content())
+            self.assertIn(row["url"], message.get_content())
+        self.assertEqual(message.get_content().count("（IRRELEVANT）"), 3)
+        self.assertIn("合成样本；时间不明。", message.get_content())
+        receipt = (self.root / (monitor.due_slot(NOW) + ".receipt.json")).read_bytes()
+        self.assertEqual(self.run_at(transport, source_fetch=self.fetch), result)
+        self.assertEqual((self.root / (monitor.due_slot(NOW) + ".receipt.json")).read_bytes(), receipt)
+        self.assertEqual((self.source_calls, len(transport.calls), len(self.factory.calls)), (1, 1, 1))
+
+    def test_next_slot_without_new_tweets_mails_status_without_model_cost(self):
+        transport = Transport([model_response(("IRRELEVANT",) * 3)])
+        self.run_at(transport, source_fetch=self.fetch)
+        first_id = str(self.message()["Message-ID"])
+        now = NOW.replace(hour=5)
+        result = self.run_at(transport, now=now, source_fetch=self.fetch)
+        self.assertEqual((result["status"], result["captured_items"], result["new_items"],
+                          result["analyzed_items"], result["relevant_items"]), ("SENT", 3, 0, 0, 0))
+        message = self.message()
+        self.assertIn("暂无新推文", str(message["Subject"]))
+        self.assertIn("本轮采集条数：3", message.get_content())
+        self.assertIn("没有新推文，未重复调用模型", message.get_content())
+        self.assertNotEqual(first_id, str(message["Message-ID"]))
+        self.assertEqual(self.run_at(transport, now=now, source_fetch=self.fetch), result)
+        self.assertEqual((self.source_calls, len(transport.calls), len(self.factory.calls)), (2, 1, 2))
+
+    def test_empty_collection_sends_status_without_model_request(self):
+        self.tweets = []
+        transport = Transport([])
+        result = self.run_at(transport, source_fetch=self.fetch)
+        self.assertEqual((result["status"], result["captured_items"], result["analyzed_items"]),
+                         ("SENT", 0, 0))
+        message = self.message()
+        self.assertIn("未采集到推文", str(message["Subject"]))
+        self.assertIn("模型步骤未执行", message.get_content())
+        self.assertEqual(self.run_at(transport, source_fetch=self.fetch), result)
+        self.assertEqual((self.source_calls, len(transport.calls), len(self.factory.calls)), (1, 0, 1))
+
+    def test_only_unseen_tweets_are_analyzed_and_included_in_summary(self):
+        (self.root / "seen-v1.json").write_text(json.dumps({"schema_version": 1,
+            "seen_ids": [self.tweets[0]["id"]]}), encoding="utf-8")
+        transport = Transport([model_response(("IRRELEVANT", "POSSIBLE_RESET"))])
+        result = self.run_at(transport, source_fetch=self.fetch)
+        self.assertEqual((result["status"], result["captured_items"], result["new_items"],
+                          result["analyzed_items"], result["relevant_items"]), ("SENT", 3, 2, 2, 1))
+        request = json.loads(transport.calls[0][0].data)
+        inputs = json.loads(request["messages"][1]["content"])["tweets"]
+        self.assertEqual([row["text"] for row in inputs], [row["text"] for row in self.tweets[1:]])
+        body = self.message().get_content()
+        self.assertNotIn(self.tweets[0]["text"], body)
+        for row in self.tweets[1:]:
+            self.assertIn(row["text"], body)
+        self.assertEqual((self.source_calls, len(transport.calls), len(self.factory.calls)), (1, 1, 1))
+
+    def test_status_mail_smtp_failure_or_uncertainty_is_not_retried(self):
+        self.tweets = []
+        transport = Transport([])
+        for hour, session, expected in (
+                (0, FakeSession(auth=(535, b"synthetic rejected")), "FAILED"),
+                (5, FakeSession(getreply=TimeoutError("synthetic timeout")), "UNKNOWN")):
+            with self.subTest(outcome=expected):
+                factory = FakeFactory(session)
+                now = NOW.replace(hour=hour)
+                result = self.run_at(transport, now=now, source_fetch=self.fetch, smtp_factory=factory)
+                self.assertEqual((result["status"], result["smtp_status"], result["stage"]),
+                                 (expected, expected, "SMTP_SEND"))
+                self.assertEqual(self.run_at(transport, now=now, source_fetch=self.fetch,
+                                             smtp_factory=factory), result)
+                self.assertEqual(len(factory.calls), 1)
+        self.assertEqual((self.source_calls, len(transport.calls)), (2, 0))
 
     def test_source_failure_keeps_specific_code_and_stage_in_status(self):
         def fail(*args):

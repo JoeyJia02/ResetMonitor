@@ -3,7 +3,8 @@
 The Windows logon task starts this process with pythonw. Each slot is claimed
 durably before any provider call. A slot is never retried automatically, even
 after a crash or an uncertain SMTP outcome. Source rows already seen in prior
-slots are not sent to the model again; only relevant model labels produce mail.
+slots are not sent to the model again. Every successfully completed slot sends
+one summary, including irrelevant classifications or a no-new-items status.
 """
 
 from datetime import datetime, timedelta, timezone
@@ -31,7 +32,7 @@ BEIJING = timezone(timedelta(hours=8))
 SLOTS = ((8, 0), (13, 0), (20, 0))
 _ID = re.compile(r"[1-9][0-9]{0,19}\Z")
 _RESULTS = frozenset({"POST_RESET", "PRE_RESET", "POSSIBLE_RESET"})
-CODE_VERSION = "20261012-long-note-fix"
+CODE_VERSION = "20261012-every-slot-mail"
 
 
 class BackgroundError(ValueError):
@@ -174,11 +175,9 @@ def run_slot(now, *, root=None, credential_loader=None, source_fetch=None,
             seen.update(tweet["id"] for tweet in pending)
             record["stage"] = "SEEN_SAVE"
             _save(state_path, {"schema_version": 1, "seen_ids": sorted(seen, key=int)})
-            if not pending:
-                record["status"] = "NO_NEW_ITEMS"
-            else:
+            results, evidence = [], {}
+            if pending:
                 packed, mapping = batch._pack(pending)
-                evidence = {}
                 record["stage"] = "MODEL_ANALYZE"
                 analyzed = batch._analyze(
                     credentials.deepseek_api_key, _body(pending, batch._now(lambda: now)),
@@ -186,35 +185,29 @@ def run_slot(now, *, root=None, credential_loader=None, source_fetch=None,
                     model_budget=manual._NoLedger())
                 results = batch._restore_ids(analyzed, mapping)
                 _safe([results, evidence], secrets)
-                relevant_ids = {row["id"] for row in results if row["label"] in _RESULTS}
-                relevant_tweets = [tweet for tweet in pending if tweet["id"] in relevant_ids]
-                relevant_results = [row for row in results if row["id"] in relevant_ids]
-                record.update(analyzed_items=len(results), relevant_items=len(relevant_results))
-                notification = None
-                record["stage"] = "NOTIFICATION_BUILD"
-                if relevant_tweets:
-                    notification = _notification(relevant_tweets, relevant_results, evidence,
-                                                 batch._now(lambda: now), run_id, background=True)
-                    _safe(notification, secrets)
-                record["stage"] = "ANALYSIS_SAVE"
-                _save(root / (run_id + ".result.json"), _safe({
-                    "schema_version": 1, "run_id": run_id, "status": "ANALYZED",
-                    "tweets": pending, "results": results, "source": source,
-                    "analysis": evidence, "notification": notification}, secrets))
-                if notification is None:
-                    record["status"] = "NO_RELEVANT_ITEMS"
-                else:
-                    record["stage"] = "SMTP_SEND"
-                    notifier = SMTPNotifier(SMTPConfig(
-                        host=manual.SMTP_HOST, port=manual.SMTP_PORT, security="SSL",
-                        sender=SENDER, user=SENDER, recipient=RECIPIENT,
-                        password=credentials.smtp_password, auth_mechanism="LOGIN",
-                        timeout_seconds=20), smtp_factory=smtp_factory or stdlib_smtp_factory)
-                    delivery = notifier.send(notification)
-                    record.update(smtp_status=delivery.status,
-                                  status="SENT" if delivery.status == "SENT" else delivery.status)
-                    if delivery.error_code:
-                        record["error_code"] = delivery.error_code
+            record.update(analyzed_items=len(results),
+                          relevant_items=sum(row["label"] in _RESULTS for row in results))
+            record["stage"] = "NOTIFICATION_BUILD"
+            notification = _notification(pending, results, evidence,
+                                         batch._now(lambda: now), run_id, background=True,
+                                         captured_items=len(tweets))
+            _safe(notification, secrets)
+            record["stage"] = "ANALYSIS_SAVE"
+            _save(root / (run_id + ".result.json"), _safe({
+                "schema_version": 1, "run_id": run_id, "status": "ANALYZED",
+                "tweets": pending, "results": results, "source": source,
+                "analysis": evidence, "notification": notification}, secrets))
+            record["stage"] = "SMTP_SEND"
+            notifier = SMTPNotifier(SMTPConfig(
+                host=manual.SMTP_HOST, port=manual.SMTP_PORT, security="SSL",
+                sender=SENDER, user=SENDER, recipient=RECIPIENT,
+                password=credentials.smtp_password, auth_mechanism="LOGIN",
+                timeout_seconds=20), smtp_factory=smtp_factory or stdlib_smtp_factory)
+            delivery = notifier.send(notification)
+            record.update(smtp_status=delivery.status,
+                          status="SENT" if delivery.status == "SENT" else delivery.status)
+            if delivery.error_code:
+                record["error_code"] = delivery.error_code
     except LockBusy:
         record["status"] = "BUSY"
     except BackgroundError as error:
@@ -227,7 +220,7 @@ def run_slot(now, *, root=None, credential_loader=None, source_fetch=None,
     except Exception:
         # No untrusted provider body, exception text, or credential is logged.
         record.update(status="UNKNOWN", error_code="BACKGROUND_" + record["stage"] + "_FAILED")
-    if record["status"] in ("SENT", "NO_NEW_ITEMS", "NO_RELEVANT_ITEMS"):
+    if record["status"] == "SENT":
         record["stage"] = "COMPLETE"
     record["completed_at"] = datetime.now(timezone.utc).isoformat()
     _save(receipt_path, record)
@@ -266,6 +259,7 @@ def main(argv=None):
         print(json.dumps({"mode": "BACKGROUND", "timezone": "Asia/Shanghai",
                           "times": ["08:00", "13:00", "20:00"],
                           "fetch_limit": 3, "autostart": "Windows interactive logon",
+                          "notification_policy": "every_completed_slot",
                           "provider_calls": 0}, ensure_ascii=False))
         return 0
     if argv == ["--serve"]:

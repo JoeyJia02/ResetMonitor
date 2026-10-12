@@ -26,8 +26,10 @@ entry was tested. Never perform paid API or SMTP calls as an offline test.
 
 ### Notification outcomes
 
-- Automatic mail is limited to new, relevant classifications; manual testing can
-  send a test summary even when content is irrelevant. Keep these policies explicit
-  while sharing source, classification and mail components. Never report SMTP
+- The installed background sends one summary for every successfully completed
+  slot: include all new classifications, including IRRELEVANT, and send a status
+  summary when there are no new tweets. Deduplication still skips repeated model
+  calls. Manual testing sends a test summary; undeployed candidates retain their
+  separate policies. Never report SMTP
   acceptance as inbox delivery, erase failed or uncertain receipts to force a retry,
   or claim failure-recovery behavior from an undeployed candidate.

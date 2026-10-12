@@ -12,6 +12,8 @@ python -X utf8 -B -m unittest discover -s tests -q
 
 恢复和诊断候选有单独测试，但候选通过测试不代表已部署到后台。
 
+`tests/test_background_production.py` 直接验证已安装的后台入口：混合分类、全部无关、无新推文和空采集都各发一封；同轮重复调用不重复发信，去重后不重复调用模型，SMTP 失败或结果不明也不自动重试。
+
 ## 界面检查
 
 ```powershell

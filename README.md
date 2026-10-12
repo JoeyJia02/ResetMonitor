@@ -2,7 +2,7 @@
 
 在 Windows 本机运行的 Codex 额外额度重置公告监控器。
 
-每天北京时间 **08:00 / 13:00 / 20:00**，从 Apify 采集 `@thsottiaux` 最新最多 **3 条**公开推文，用 DeepSeek 做一次批量语义分类，再通过 QQ 邮箱发送相关公告。无需在本机登录 X，无需云服务器；采集仍依赖 Apify 的上游服务。
+每天北京时间 **08:00 / 13:00 / 20:00**，从 Apify 采集 `@thsottiaux` 最新最多 **3 条**公开推文，用 DeepSeek 对新推文做一次批量语义分类，再通过 QQ 邮箱发送本轮汇总。所有分类均发信；没有新推文时也发送状态邮件，不重复调用模型。无需在本机登录 X，无需云服务器；采集仍依赖 Apify 的上游服务。
 
 ## 本机控制台
 
@@ -37,8 +37,8 @@ Windows 登录 → 常驻调度 → Apify 最新最多 3 条
                               ↓
                     DeepSeek 一次批量分类
                               ↓
-             POST / PRE / POSSIBLE → QQ SMTP → 邮箱
-                  IRRELEVANT → 不发自动通知
+          全部分类（含 IRRELEVANT）→ QQ SMTP → 邮箱
+             没有新推文 → 跳过模型 → 状态邮件
 ```
 
 模型输入包含轮内序号、推文时间、完整原文与必要的引用、父帖、投票上下文，不发送整份原始 JSON 或点赞等互动统计。分类结果严格校验为 `POST_RESET`、`PRE_RESET`、`POSSIBLE_RESET`、`IRRELEVANT` 四种；相对或有歧义的重置时间保留为 `null`。
@@ -48,12 +48,12 @@ Windows 登录 → 常驻调度 → Apify 最新最多 3 条
 | 入口 | 用途 |
 | --- | --- |
 | `scripts/reset_monitor_settings.pyw` | 本机设置控制台 |
-| `scripts/background_monitor.py --serve` | 当前后台调度入口，自动通知相关公告 |
+| `scripts/background_monitor.py --serve` | 当前后台调度入口，每轮发送分析汇总或无新推文状态 |
 | `scripts/manual_test.py` | 控制台调用的手动全链路测试，共用采集、分类与邮件组件 |
 | `main.py` | 默认离线；`--live` 是另一路受证据与预算约束的有限验证入口 |
 | `scripts/*_candidate.py` | 实验性诊断和失败恢复候选，未接入默认后台 |
 
-自动监控与手动测试共用外部服务组件，但调度、去重和邮件触发策略不同。不要使用旧的 `Manage-ResetMonitorTask.ps1 -Mode Live` 代替当前后台安装脚本。
+自动监控与手动测试共用外部服务组件，都在正常完成后发信；后台按固定时点运行并对已处理推文去重，手动测试分析本轮采集结果。不要使用旧的 `Manage-ResetMonitorTask.ps1 -Mode Live` 代替当前后台安装脚本。
 
 电脑需保持开机、登录、联网且不休眠。错过的时点不补采；每轮仅取最新 3 条，接受漏报。当前后台对失败轮次不自动重试，也不保证失败推文下轮重新分析。SMTP 接受不等于邮件已进收件箱。每日三轮和数量限制不是全账户费用硬上限，手动测试另计。
 

@@ -10,7 +10,7 @@
 # 预览不会注册、启动或删除任务
 .\scripts\Manage-ResetMonitorBackground.ps1 -Action Preview
 
-# 注册并启动；此后到点会自动访问服务并发出相关通知
+# 注册并启动；此后到点会自动访问服务并发送本轮汇总
 .\scripts\Manage-ResetMonitorBackground.ps1 -Action Install
 
 # 查看任务状态
@@ -26,8 +26,8 @@
 - 必须保持已登录、联网且不休眠；这不是系统启动前即可运行的 Windows 服务。
 - 错过时点不补跑；同一时点先记录尝试，失败或发送结果不确定时不自动重试。
 - 每轮 Apify 最多返回 3 条，只有未见过的推文进入一次 DeepSeek 批量分析。
-- `POST_RESET`、`PRE_RESET`、`POSSIBLE_RESET` 可触发汇总通知；没有新内容或全为 `IRRELEVANT` 时不发信。
-- 手动测试额外计费，并会发送测试邮件；它与后台共用采集、分类和 SMTP 组件，但通知和去重策略不同。
+- 每个正常完成的轮次发送一封汇总，包含全部新推文的分类结果，包括 `IRRELEVANT`。没有新推文或采集为空时也发送状态邮件，并跳过模型请求。
+- 手动测试额外计费，并会发送测试邮件；它与后台共用采集、分类和 SMTP 组件，后台额外按固定时点调度并去重。
 
 ## 本地记录
 

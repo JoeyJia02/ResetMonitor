@@ -302,7 +302,7 @@ class SettingsWindow:
             line.pack(fill="x", pady=(10, 0))
             ttk.Label(line, text=label, style="Note.TLabel").pack(side="left")
             ttk.Label(line, textvariable=variable, style="Card.TLabel", font=("Segoe UI", 10)).pack(side="right")
-        ttk.Label(mail, text="自动监控只通知相关公告。", style="Note.TLabel").pack(anchor="w", pady=(13, 0))
+        ttk.Label(mail, text="每轮发送汇总，无关或无新推文也发信。", style="Note.TLabel").pack(anchor="w", pady=(13, 0))
 
         test_border, test_card = self._card(right, padding=(20, 18))
         test_border.pack(fill="both", expand=True, pady=(14, 0))

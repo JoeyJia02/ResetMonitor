@@ -115,13 +115,21 @@ def _body(tweets, now):
     return body
 
 
-def _notification(tweets, results, evidence, now, run_id=PLAN_ID, *, background=False):
+def _notification(tweets, results, evidence, now, run_id=PLAN_ID, *, background=False,
+                  captured_items=None):
     local_time = now.astimezone(timezone(timedelta(hours=8))).isoformat()
+    relevant_count = sum(row["label"] in {"POST_RESET", "PRE_RESET", "POSSIBLE_RESET"}
+                         for row in results)
     lines = ["ResetMonitor 自动监控" if background else "ResetMonitor 全链路一次性测试", "",
-             ("本轮发现以下可能相关的 Codex 额外重置内容。" if background else
+             ("本轮监控已完成，以下保留全部分类结果。是否涉及额外重置，请看每条分析。" if background else
               "本邮件用于验收采集、模型分析与邮件通道。是否确认重置，请看每条分析。"),
-             ("采集时间（北京时间）：" if background else "测试时间（北京时间）：") + local_time,
-             "本轮分析条数：" + str(len(tweets)), ""]
+             ("采集时间（北京时间）：" if background else "测试时间（北京时间）：") + local_time]
+    if background and captured_items is not None:
+        lines.append("本轮采集条数：" + str(captured_items))
+    lines.append("本轮分析条数：" + str(len(tweets)))
+    if background:
+        lines.append("涉及额外重置条数：" + str(relevant_count))
+    lines.append("")
     labels = {"POST_RESET": "已确认额外重置", "PRE_RESET": "额外重置预告",
               "POSSIBLE_RESET": "疑似额外重置", "IRRELEVANT": "与额外重置无关"}
     by_id = {row["id"]: row for row in results}
@@ -132,12 +140,20 @@ def _notification(tweets, results, evidence, now, run_id=PLAN_ID, *, background=
                       "重置时间：" + (result["reset_time"] or "时间不明"),
                       "分析：" + result["reason"], "链接：" + tweet["url"], ""])
     if not tweets:
-        lines.append("本轮没有可分析的目标推文，模型步骤未执行。")
+        lines.append("本轮采集的推文均已处理，没有新推文，未重复调用模型。"
+                     if background and captured_items else
+                     "本轮没有可分析的目标推文，模型步骤未执行。")
     if evidence.get("usage_cost_upper_bound_cny"):
         lines.append("按本轮tokens和已核价最高费率计算的模型费用上界（元）："
                      + evidence["usage_cost_upper_bound_cny"])
+    subject = SUBJECT
+    if background:
+        subject = ("【ResetMonitor】Codex 额外重置通告" if relevant_count else
+                   "【ResetMonitor】监控汇总：暂无相关公告" if tweets else
+                   "【ResetMonitor】监控汇总：暂无新推文" if captured_items else
+                   "【ResetMonitor】监控汇总：未采集到推文")
     return {"recipient": RECIPIENT,
-            "subject": "【ResetMonitor】Codex 额外重置通告" if background else SUBJECT,
+            "subject": subject,
             "body": "\n".join(lines),
             "message_id": "<" + run_id + "@qq.com>", "created_at": now.isoformat()}
 
