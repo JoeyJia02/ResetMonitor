@@ -37,6 +37,20 @@ from .notifier import DeliveryResult
 
 _LOCAL = re.compile(r"[A-Za-z0-9!#$%&'*+/=?^_`{|}~.-]+\Z")
 _DOMAIN_LABEL = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\Z")
+# Only fixed OpenSSL reason names become public diagnostic codes. Never copy
+# exception text or an arbitrary reason into receipts, UI or logs.
+_TLS_REASONS = {
+    "UNEXPECTED_EOF_WHILE_READING": "PEER_CLOSED",
+    "WRONG_VERSION_NUMBER": "WRONG_VERSION",
+    "TLSV1_ALERT_PROTOCOL_VERSION": "PROTOCOL_VERSION",
+    "SSLV3_ALERT_HANDSHAKE_FAILURE": "HANDSHAKE_FAILED",
+    "TLSV1_ALERT_INTERNAL_ERROR": "PEER_INTERNAL_ERROR",
+    "SSLV3_ALERT_BAD_RECORD_MAC": "BAD_RECORD_MAC",
+    "DECRYPTION_FAILED_OR_BAD_RECORD_MAC": "BAD_RECORD_MAC",
+    "UNSAFE_LEGACY_RENEGOTIATION_DISABLED": "LEGACY_RENEGOTIATION",
+    "DH_KEY_TOO_SMALL": "WEAK_DH_KEY",
+    "NO_CIPHERS_AVAILABLE": "NO_CIPHERS",
+}
 
 
 def _domain(value: str) -> bool:
@@ -276,14 +290,21 @@ class SMTPNotifier:
             if data_started:
                 return DeliveryResult("UNKNOWN", error_code="SMTP_DATA_UNCERTAIN")
             if isinstance(exc, ssl.SSLCertVerificationError):
-                return DeliveryResult("FAILED", retryable=False, error_code="SMTP_TLS_VERIFICATION_FAILED")
+                return DeliveryResult("FAILED", retryable=False,
+                                      error_code=f"SMTP_{phase}_TLS_CERTIFICATE_INVALID")
             if isinstance(exc, smtplib.SMTPResponseException):
                 code = getattr(exc, "smtp_code", None)
                 if type(code) is int and 400 <= code <= 599:
                     return _rejected(code, phase)
                 return DeliveryResult("FAILED", retryable=False, error_code="SMTP_PROTOCOL_ERROR")
-            if isinstance(exc, (ssl.SSLError, smtplib.SMTPNotSupportedError)):
-                return DeliveryResult("FAILED", retryable=False, error_code="SMTP_TLS_OR_AUTH_UNSUPPORTED")
+            if isinstance(exc, ssl.SSLError):
+                reason = getattr(exc, "reason", None)
+                detail = _TLS_REASONS.get(reason, "ERROR") if isinstance(reason, str) else "ERROR"
+                return DeliveryResult("FAILED", retryable=False,
+                                      error_code=f"SMTP_{phase}_TLS_{detail}")
+            if isinstance(exc, smtplib.SMTPNotSupportedError):
+                return DeliveryResult("FAILED", retryable=False,
+                                      error_code=f"SMTP_{phase}_UNSUPPORTED")
             retryable = isinstance(exc, (OSError, smtplib.SMTPServerDisconnected))
             return DeliveryResult("FAILED", retryable=retryable, error_code=f"SMTP_{phase}_UNAVAILABLE")
         finally:

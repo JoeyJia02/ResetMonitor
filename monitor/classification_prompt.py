@@ -33,6 +33,12 @@ SYSTEM_PROMPT = r'''你是 Codex 额外额度重置公告的分类器。逐条�
 6. 证据不足或语义模糊时用 POSSIBLE_RESET，不要默认 IRRELEVANT；但纯粹泛泛感叹、
    玩笑或与额度无关的话题，用 IRRELEVANT。
 
+【上下文缺失】
+若某条输入的 context_unavailable 为 true，仅依据该条完整主文与发布时间判断，不得猜测
+引用、回复父帖或投票内容。主文证据明确时正常分类；可能涉及额外重置但缺少依据时用
+POSSIBLE_RESET，明确无关时用 IRRELEVANT。不得把上下文获取失败本身当作重置信号，
+并在 reason 中说明“仅依据主文分析”。每条独立，其他条目仍使用其实际提供的上下文。
+
 【时间】
 reset_time 仅在原文给出明确、无歧义且带时区的时间锚点时填写，格式为带偏移的 ISO8601。
 以下必须为 null，不得推断或编造：soon、tonight、later today、by EOD、下周一、

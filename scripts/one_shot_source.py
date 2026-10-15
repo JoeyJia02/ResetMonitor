@@ -9,6 +9,9 @@ import hashlib
 from html import unescape
 import json
 import re
+import socket
+import ssl
+from urllib.error import HTTPError, URLError
 from urllib.request import Request
 
 from scripts.capture_first_three import (
@@ -33,14 +36,26 @@ PUBLIC_ERROR_CODES = frozenset({
     "ONE_SHOT_SOURCE_REPLY_INVALID", "ONE_SHOT_SOURCE_SECRET_REFLECTION",
     "ONE_SHOT_EMBED_ROOT_INVALID", "ONE_SHOT_EMBED_ID_MISMATCH",
     "ONE_SHOT_EMBED_AUTHOR_INVALID", "ONE_SHOT_EMBED_IDENTITY_MISMATCH",
-    "ONE_SHOT_EMBED_TIME_MISMATCH", "ONE_SHOT_EMBED_TEXT_INVALID",
+    "ONE_SHOT_EMBED_TIME_MISMATCH", "ONE_SHOT_EMBED_TIME_INVALID", "ONE_SHOT_EMBED_TEXT_INVALID",
     "ONE_SHOT_EMBED_TEXT_TRUNCATED", "ONE_SHOT_EMBED_TEXT_MISMATCH",
     "ONE_SHOT_EMBED_QUOTE_INVALID", "ONE_SHOT_EMBED_QUOTE_DEPTH_INVALID",
     "ONE_SHOT_EMBED_QUOTE_MISSING", "ONE_SHOT_EMBED_CARD_INVALID",
     "ONE_SHOT_EMBED_POLL_INVALID",
 }) | frozenset(prefix + suffix for prefix in ("ONE_SHOT_SOURCE", "ONE_SHOT_EMBED")
                for suffix in ("_HTTP_FAILED", "_TOTAL_INVALID", "_BODY_INVALID",
-                              "_SECRET_REFLECTION", "_JSON_INVALID", "_REQUEST_FAILED"))
+                              "_SECRET_REFLECTION", "_JSON_INVALID", "_REQUEST_FAILED",
+                              "_TIMEOUT", "_DNS_FAILED", "_CONNECTION_FAILED",
+                              "_TLS_CERTIFICATE_FAILED", "_TLS_PEER_CLOSED", "_TLS_FAILED")) | frozenset(
+    prefix + "_HTTP_" + str(status) for prefix in ("ONE_SHOT_SOURCE", "ONE_SHOT_EMBED")
+    for status in range(100, 600))
+
+# A missing supplement can be omitted; contradictory primary identity/text or
+# reflected credentials must still stop the run.
+_CONTEXT_CONFLICTS = frozenset({
+    "ONE_SHOT_EMBED_ID_MISMATCH", "ONE_SHOT_EMBED_IDENTITY_MISMATCH",
+    "ONE_SHOT_EMBED_TIME_MISMATCH", "ONE_SHOT_EMBED_TEXT_MISMATCH",
+    "ONE_SHOT_EMBED_SECRET_REFLECTION",
+})
 
 
 class OneShotSourceError(ValueError):
@@ -95,16 +110,40 @@ def _json_response(request, transport, token, *, limit, accepted, timeout, prefi
                 _require(totals is None or isinstance(totals, list), prefix + "_TOTAL_INVALID")
             body = response.read(limit + 1)
         _require(isinstance(body, bytes) and len(body) <= limit, prefix + "_BODY_INVALID")
-        decoded = body.decode("utf-8")
+        try:
+            decoded = body.decode("utf-8")
+        except UnicodeError:
+            raise OneShotSourceError(prefix + "_JSON_INVALID") from None
         _require(token not in decoded, prefix + "_SECRET_REFLECTION")
-        document = json.loads(decoded, object_pairs_hook=_strict_object, parse_constant=_reject_constant)
+        try:
+            document = json.loads(decoded, object_pairs_hook=_strict_object, parse_constant=_reject_constant)
+        except ValueError:
+            raise OneShotSourceError(prefix + "_JSON_INVALID") from None
         return document, totals, status, hashlib.sha256(body).hexdigest()
     except OneShotSourceError:
         raise
-    except (UnicodeError, ValueError):
-        raise OneShotSourceError(prefix + "_JSON_INVALID") from None
-    except Exception:
-        raise OneShotSourceError(prefix + "_REQUEST_FAILED") from None
+    except Exception as error:
+        cause = error.reason if isinstance(error, URLError) and isinstance(error.reason, BaseException) else error
+        suffix = "_REQUEST_FAILED"
+        if isinstance(error, HTTPError):
+            if type(error.code) is int and 100 <= error.code <= 599:
+                suffix = "_HTTP_" + str(error.code)
+            try:
+                error.close()
+            except Exception:
+                pass
+        elif isinstance(cause, ssl.SSLCertVerificationError):
+            suffix = "_TLS_CERTIFICATE_FAILED"
+        elif isinstance(cause, ssl.SSLError):
+            suffix = ("_TLS_PEER_CLOSED" if getattr(cause, "reason", None) == "UNEXPECTED_EOF_WHILE_READING"
+                      else "_TLS_FAILED")
+        elif isinstance(cause, socket.gaierror):
+            suffix = "_DNS_FAILED"
+        elif isinstance(cause, TimeoutError):
+            suffix = "_TIMEOUT"
+        elif isinstance(cause, ConnectionError):
+            suffix = "_CONNECTION_FAILED"
+        raise OneShotSourceError(prefix + suffix) from None
 
 
 def _author(document, *, target=False):
@@ -125,6 +164,13 @@ def _embed_text(document):
     value = document.get("full_text", document.get("text"))
     _require(document.get("truncated") is not True, "ONE_SHOT_EMBED_TEXT_TRUNCATED")
     return _text(value, "ONE_SHOT_EMBED_TEXT_INVALID")
+
+
+def _context_time(value):
+    try:
+        return _time(value)
+    except OneShotSourceError:
+        raise OneShotSourceError("ONE_SHOT_EMBED_TIME_INVALID") from None
 
 
 def _compare_embed_text(document, actor_text):
@@ -168,7 +214,7 @@ def _quote(value, *, depth=0):
     _require(isinstance(value, dict), "ONE_SHOT_EMBED_QUOTE_INVALID")
     identifier = _identifier(value.get("id_str", value.get("id")), "ONE_SHOT_EMBED_QUOTE_INVALID")
     created = value.get("created_at")
-    _time(created)
+    _context_time(created)
     result = {"id": identifier, "text": _embed_text(value), "created_at": created,
               "author": _author(value.get("user")),
               "provenance": "nested quoted_tweet in the original item's official embed; no extra quote GET"}
@@ -212,7 +258,7 @@ def _poll(card):
     if end is not None:
         _require(isinstance(end, dict), "ONE_SHOT_EMBED_POLL_INVALID")
         result["end_datetime_utc"] = end.get("string_value")
-        _time(result["end_datetime_utc"])
+        _context_time(result["end_datetime_utc"])
     final = values.get("counts_are_final")
     if final is not None:
         _require(isinstance(final, dict), "ONE_SHOT_EMBED_POLL_INVALID")
@@ -253,13 +299,15 @@ def _validate_row(row, observed):
             "text": text, "created_at": created_at, "url": canonical_url}
 
 
-def fetch_three(token, transport, clock):
+def fetch_three(token, transport, clock, *, allow_primary_only=False, source_checkpoint=None):
     """Run once, then return oldest-first canonical tweets and safe diagnostics.
 
     The supplied urllib-style transport must reject redirects and retries.
     Native retweets are skipped without requesting replacement items. Every
     remaining item gets at most one credential-free official embed GET so poll
     and quoted text missing from the observed Actor schema can be included.
+    Normal desktop/background callers can opt into primary-only classification
+    when a supplement is unavailable. Legacy governed callers remain strict.
     """
     _require(_valid_secret(token), "ONE_SHOT_SOURCE_TOKEN_INVALID")
     try:
@@ -293,46 +341,72 @@ def fetch_three(token, transport, clock):
     _require(len(set(ids)) == len(ids), "ONE_SHOT_SOURCE_DUPLICATE_ID")
     source_order = [(_time(tweet["created_at"]), int(tweet["id"])) for tweet in canonical]
     _require(source_order == sorted(source_order, reverse=True), "ONE_SHOT_SOURCE_ORDER_INVALID")
-    accepted, skipped, embed_hashes, text_matches = [], [], {}, {}
+    source_evidence = {
+        "actor_id": ACTOR_ID, "requested_build_id": BUILD_ID, "requested_build_number": BUILD_NUMBER,
+        "provider_run_cap_usd": "0.0009", "http_status": status, "source_posts": 1,
+        "delivered_count": len(rows), "pagination_total": total,
+        "pagination_total_present": bool(totals), "delivered_ids_latest_first": ids,
+        "pagination_total_matches_delivered": total == len(rows) if total is not None else None,
+        "source_body_sha256": body_hash, "canonical_order": "oldest_first",
+        "observed_at": observed.isoformat(), "additional_actor_runs": 0,
+    }
+    if source_checkpoint is not None:
+        primary = sorted((dict(tweet) for tweet in canonical),
+                         key=lambda tweet: (_time(tweet["created_at"]), int(tweet["id"])))
+        _require(token not in json.dumps((primary, source_evidence), ensure_ascii=False),
+                 "ONE_SHOT_SOURCE_SECRET_REFLECTION")
+        source_checkpoint(primary, dict(source_evidence))
+    accepted, skipped, embed_hashes, text_matches, context_errors = [], [], {}, {}, {}
+    context_attempts = 0
     for row, tweet in zip(rows, canonical):
         if row["isRetweet"]:
             skipped.append(tweet["id"])
             continue
-        embed_url = EMBED_BASE + "?id=" + tweet["id"] + "&lang=en&token=0"
-        embed_request = Request(embed_url, method="GET", headers={"Accept": "application/json"})
-        embed, _, _, embed_hash = _json_response(embed_request, transport, token, limit=EMBED_MAX_BYTES,
-                                                accepted={200}, timeout=20, prefix="ONE_SHOT_EMBED")
-        _require(isinstance(embed, dict), "ONE_SHOT_EMBED_ROOT_INVALID")
-        _require(embed.get("id_str", embed.get("id")) == tweet["id"], "ONE_SHOT_EMBED_ID_MISMATCH")
-        _author(embed.get("user"), target=True)
-        _require(_time(embed.get("created_at")) == _time(tweet["created_at"]),
-                 "ONE_SHOT_EMBED_TIME_MISMATCH")
-        text_matches[tweet["id"]] = _compare_embed_text(embed, tweet["text"])
-        quoted = _quote(embed.get("quoted_tweet"))
-        _require(not row["isQuote"] or quoted is not None, "ONE_SHOT_EMBED_QUOTE_MISSING")
         reply_id = row.get("inReplyToTweetId")
         if reply_id is not None:
             _identifier(reply_id, "ONE_SHOT_SOURCE_REPLY_INVALID")
         reply_user = row.get("inReplyToUsername")
         _require(reply_user is None or isinstance(reply_user, str)
                  and re.fullmatch(r"[A-Za-z0-9_]{1,15}", reply_user), "ONE_SHOT_SOURCE_REPLY_INVALID")
-        tweet["context"] = {"is_reply": row["isReply"], "is_quote": row["isQuote"],
-                            "in_reply_to_tweet_id": reply_id, "in_reply_to_username": reply_user,
-                            "quoted_tweet": quoted, "poll": _poll(embed.get("card"))}
+        embed_url = EMBED_BASE + "?id=" + tweet["id"] + "&lang=en&token=0"
+        embed_request = Request(embed_url, method="GET", headers={"Accept": "application/json"})
+        context_attempts += 1
+        try:
+            embed, _, _, embed_hash = _json_response(embed_request, transport, token, limit=EMBED_MAX_BYTES,
+                                                    accepted={200}, timeout=20, prefix="ONE_SHOT_EMBED")
+            _require(isinstance(embed, dict), "ONE_SHOT_EMBED_ROOT_INVALID")
+            _require(embed.get("id_str", embed.get("id")) is not None, "ONE_SHOT_EMBED_ROOT_INVALID")
+            _require(embed.get("id_str", embed.get("id")) == tweet["id"], "ONE_SHOT_EMBED_ID_MISMATCH")
+            _author(embed.get("user"), target=True)
+            _require(_context_time(embed.get("created_at")) == _time(tweet["created_at"]),
+                     "ONE_SHOT_EMBED_TIME_MISMATCH")
+            text_match = _compare_embed_text(embed, tweet["text"])
+            quoted = _quote(embed.get("quoted_tweet"))
+            _require(not row["isQuote"] or quoted is not None, "ONE_SHOT_EMBED_QUOTE_MISSING")
+            context = {"is_reply": row["isReply"], "is_quote": row["isQuote"],
+                       "in_reply_to_tweet_id": reply_id, "in_reply_to_username": reply_user,
+                       "quoted_tweet": quoted, "poll": _poll(embed.get("card"))}
+        except OneShotSourceError as error:
+            if (allow_primary_only is not True or error.code not in PUBLIC_ERROR_CODES
+                    or not error.code.startswith("ONE_SHOT_EMBED_") or error.code in _CONTEXT_CONFLICTS):
+                raise
+            # Discard this item's entire supplement, including partial quote or
+            # poll data. No retry, replacement tweet or extra model request.
+            tweet["context"] = {"context_unavailable": True}
+            context_errors[tweet["id"]] = error.code
+        else:
+            tweet["context"] = context
+            embed_hashes[tweet["id"]] = embed_hash
+            text_matches[tweet["id"]] = text_match
         accepted.append(tweet)
-        embed_hashes[tweet["id"]] = embed_hash
     accepted.sort(key=lambda tweet: (_time(tweet["created_at"]), int(tweet["id"])))
     safe_evidence = {
-        "actor_id": ACTOR_ID, "requested_build_id": BUILD_ID, "requested_build_number": BUILD_NUMBER,
-        "provider_run_cap_usd": "0.0009", "http_status": status, "source_posts": 1,
-        "official_context_gets": len(embed_hashes), "delivered_count": len(rows),
-        "analysis_count": len(accepted), "pagination_total": total,
-        "pagination_total_present": bool(totals), "delivered_ids_latest_first": ids,
-        "pagination_total_matches_delivered": total == len(rows) if total is not None else None,
-        "native_retweet_ids_skipped": skipped, "source_body_sha256": body_hash,
+        **source_evidence,
+        "official_context_gets": len(embed_hashes), "official_context_attempts": context_attempts,
+        "context_fallback_count": len(context_errors), "context_errors_by_id": context_errors,
+        "analysis_count": len(accepted), "native_retweet_ids_skipped": skipped,
         "official_embed_sha256_by_id": embed_hashes, "canonical_order": "oldest_first",
         "official_text_match_by_id": text_matches,
-        "observed_at": observed.isoformat(), "additional_actor_runs": 0,
     }
     # No provider response or raw error is retained in diagnostics.
     _require(token not in json.dumps((accepted, safe_evidence), ensure_ascii=False),

@@ -6,8 +6,10 @@ import json
 import os
 from pathlib import Path
 import shutil
+import ssl
 import unittest
 from unittest.mock import patch
+from urllib.error import URLError
 from uuid import uuid4
 
 
@@ -62,6 +64,78 @@ class BackgroundProductionTests(unittest.TestCase):
         args.update(changes)
         return monitor.run_slot(now, **args)
 
+    def failing_context_transport(self, *, all_failed=True):
+        rows = json.loads((PROJECT / 'tests/fixtures/source-items.json').read_text('utf-8'))
+        curated = json.loads((PROJECT / 'tests/fixtures/source-context.json').read_text('utf-8'))
+        contexts = [Response(official_embed(item)) for item in curated['items']]
+        for index in range(3 if all_failed else 1):
+            contexts[index] = URLError(TimeoutError(self.credentials.apify_token))
+        return rows, Transport([Response(rows, status=201)] + contexts + [model_response(('IRRELEVANT',) * 3)])
+
+    def test_all_context_failures_use_actual_scheduled_entry_one_model_and_one_mail(self):
+        rows, transport = self.failing_context_transport()
+        result = self.run_at(transport)
+        self.assertEqual((result['status'], result['captured_items'], result['analyzed_items'],
+                          result['context_fallback_items']), ('SENT', 3, 3, 3))
+        self.assertEqual([call[0].method for call in transport.calls], ['POST', 'GET', 'GET', 'GET', 'POST'])
+        model_input = json.loads(json.loads(transport.calls[-1][0].data)['messages'][1]['content'])['tweets']
+        for original, packed in zip(reversed(rows), model_input):
+            self.assertEqual(set(packed), {'id', 'text', 'created_at', 'context_unavailable'})
+            self.assertEqual(packed['text'], original['text'])
+            self.assertTrue(packed['context_unavailable'])
+        saved = json.loads((self.root / (monitor.due_slot(NOW) + '.source.json')).read_text('utf-8'))
+        self.assertEqual(len(saved['tweets']), 3)
+        self.assertTrue(all('context' not in tweet for tweet in saved['tweets']))
+        body = self.message().get_content()
+        self.assertEqual(body.count('分析依据：仅依据主文分析'), 3)
+        self.assertEqual(len(self.factory.calls), 1)
+        self.assertEqual(self.run_at(transport), result)
+        self.assertEqual((len(transport.calls), len(self.factory.calls)), (5, 1))
+        for path in self.root.glob('*.json'):
+            self.assertNotIn(self.credentials.apify_token, path.read_text('utf-8'))
+
+    def test_mixed_context_results_keep_verified_context_and_only_label_affected_item(self):
+        _, transport = self.failing_context_transport(all_failed=False)
+        result = self.run_at(transport)
+        self.assertEqual((result['status'], result['context_fallback_items']), ('SENT', 1))
+        packed = json.loads(json.loads(transport.calls[-1][0].data)['messages'][1]['content'])['tweets']
+        self.assertTrue(packed[-1]['context_unavailable'])
+        self.assertIn('quoted_tweet', packed[1])
+        self.assertNotIn('context_unavailable', packed[1])
+        self.assertEqual(self.message().get_content().count('分析依据：仅依据主文分析'), 1)
+
+    def test_primary_only_smtp_uncertainty_preserves_results_without_resending(self):
+        _, transport = self.failing_context_transport()
+        self.factory = FakeFactory(FakeSession(getreply=TimeoutError('synthetic timeout')))
+        result = self.run_at(transport)
+        self.assertEqual((result['status'], result['smtp_status']), ('UNKNOWN', 'UNKNOWN'))
+        self.assertTrue((self.root / (monitor.due_slot(NOW) + '.result.json')).exists())
+        self.assertEqual(self.run_at(transport), result)
+        self.assertEqual((len(transport.calls), len(self.factory.calls)), (5, 1))
+
+    def test_primary_checkpoint_write_failure_stops_before_context_model_and_mail(self):
+        _, transport = self.failing_context_transport()
+        save = monitor._save
+        def fail_source(path, value):
+            if path.name.endswith('.source.json'):
+                raise OSError('synthetic disk failure')
+            save(path, value)
+        with patch.object(monitor, '_save', side_effect=fail_source):
+            result = self.run_at(transport)
+        self.assertEqual((result['status'], result['stage']), ('UNKNOWN', 'SOURCE_SAVE'))
+        self.assertEqual((len(transport.calls), len(self.factory.calls)), (1, 0))
+        self.assertFalse((self.root / 'seen-v1.json').exists())
+
+    def test_conflicting_context_is_not_converted_into_primary_only_success(self):
+        _, transport = self.failing_context_transport()
+        transport.responses[1] = Response({'id_str': '123'})
+        result = self.run_at(transport)
+        self.assertEqual((result['status'], result['stage'], result['error_code']),
+                         ('FAILED', 'SOURCE_CONTEXT', 'ONE_SHOT_EMBED_ID_MISMATCH'))
+        self.assertEqual((len(transport.calls), len(self.factory.calls)), (2, 0))
+        self.assertTrue((self.root / (monitor.due_slot(NOW) + '.source.json')).exists())
+        self.assertFalse((self.root / 'seen-v1.json').exists())
+
     def test_long_note_reaches_model_with_complete_text_and_no_duplicate_calls(self):
         rows = json.loads((PROJECT / "tests/fixtures/source-items.json").read_text("utf-8"))
         curated = json.loads((PROJECT / "tests/fixtures/source-context.json").read_text("utf-8"))
@@ -104,6 +178,18 @@ class BackgroundProductionTests(unittest.TestCase):
         receipt = (self.root / (monitor.due_slot(NOW) + ".receipt.json")).read_bytes()
         self.assertEqual(self.run_at(transport, source_fetch=self.fetch), result)
         self.assertEqual((self.root / (monitor.due_slot(NOW) + ".receipt.json")).read_bytes(), receipt)
+        self.assertEqual((self.source_calls, len(transport.calls), len(self.factory.calls)), (1, 1, 1))
+
+    def test_tls_failure_receipt_keeps_stage_and_reason_without_retrying_slot(self):
+        error = ssl.SSLError("secret provider diagnostic")
+        error.reason = "UNEXPECTED_EOF_WHILE_READING"
+        self.factory = FakeFactory(error=error)
+        transport = Transport([model_response(("IRRELEVANT",) * 3)])
+        result = self.run_at(transport, source_fetch=self.fetch)
+        self.assertEqual((result["status"], result["stage"], result["error_code"]),
+                         ("FAILED", "SMTP_SEND", "SMTP_CONNECT_TLS_PEER_CLOSED"))
+        self.assertNotIn("secret", json.dumps(result))
+        self.assertEqual(self.run_at(transport, source_fetch=self.fetch), result)
         self.assertEqual((self.source_calls, len(transport.calls), len(self.factory.calls)), (1, 1, 1))
 
     def test_next_slot_without_new_tweets_mails_status_without_model_cost(self):

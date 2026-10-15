@@ -276,7 +276,8 @@ class SMTPTransportTests(unittest.TestCase):
 
     def test_send_exception_is_UNKNOWN_even_if_transmission_might_be_partial(self):
         for error in (TimeoutError("secret"), ConnectionResetError("secret"),
-                      smtplib.SMTPServerDisconnected("secret"), RuntimeError("secret")):
+                      smtplib.SMTPServerDisconnected("secret"), RuntimeError("secret"),
+                      ssl.SSLError("secret")):
             with self.subTest(kind=type(error).__name__):
                 session = FakeSession(send=error, close=OSError("secret"))
                 result, factory = self.deliver(session)
@@ -290,6 +291,7 @@ class SMTPTransportTests(unittest.TestCase):
 
     def test_final_reply_exception_is_UNKNOWN_including_local_response_exception(self):
         for error in (TimeoutError("secret"), smtplib.SMTPServerDisconnected("secret"),
+                      ssl.SSLError("secret"),
                       smtplib.SMTPResponseException(500, b"locally generated malformed reply")):
             with self.subTest(kind=type(error).__name__):
                 session = FakeSession(getreply=error)
@@ -407,6 +409,35 @@ class SMTPTransportTests(unittest.TestCase):
         with patch("monitor.smtp_transport.smtplib.SMTP", return_value=fake) as smtp:
             self.assertIs(stdlib_smtp_factory("smtp.example.invalid", 587, timeout=7), fake)
             smtp.assert_called_once_with("smtp.example.invalid", 587, timeout=7)
+
+    def test_tls_errors_identify_stage_and_known_reason_without_sensitive_details(self):
+        for phase in ("CONNECT", "AUTH"):
+            for reason, suffix in (("UNEXPECTED_EOF_WHILE_READING", "PEER_CLOSED"),
+                                   ("WRONG_VERSION_NUMBER", "WRONG_VERSION"),
+                                   ("SECRET_FROM_SERVER", "ERROR"), (None, "ERROR")):
+                with self.subTest(phase=phase, reason=reason):
+                    error = ssl.SSLError("secret password and server response")
+                    error.reason = reason
+                    result, factory = (self.deliver(error=error) if phase == "CONNECT"
+                                       else self.deliver(FakeSession(auth=error)))
+                    self.assertEqual(result.error_code, f"SMTP_{phase}_TLS_{suffix}")
+                    self.assertEqual(result.status, "FAILED")
+                    self.assertFalse(result.retryable)
+                    self.assertEqual(len(factory.calls), 1)
+                    self.assertNotIn("send", factory.session.names())
+                    self.assertNotIn("secret", repr(result).lower())
+
+    def test_certificate_failure_and_unsupported_auth_are_distinct(self):
+        result, factory = self.deliver(error=ssl.SSLCertVerificationError("secret"))
+        self.assertEqual(result.error_code, "SMTP_CONNECT_TLS_CERTIFICATE_INVALID")
+        self.assertEqual(len(factory.calls), 1)
+        self.assertEqual(factory.session.calls, [])
+        session = FakeSession(auth=smtplib.SMTPNotSupportedError("secret"))
+        result, _ = self.deliver(session)
+        self.assertEqual(result.error_code, "SMTP_AUTH_UNSUPPORTED")
+        self.assertEqual(session.names().count("auth"), 1)
+        self.assertNotIn("mail", session.names())
+        self.assertNotIn("secret", repr(result))
 
 
 class SMTPConfigTests(unittest.TestCase):

@@ -93,7 +93,6 @@ def main(argv=None, *, output=None, clock=None, directory=None, transport=None,
         print("PREVIEW_ONLY；请在设置窗口点击“新一轮测试”。", file=output)
         return 0
     clock = clock or (lambda: datetime.now(timezone.utc))
-    source_fetch = fetch_three if source_fetch is None else source_fetch
     try:
         directory = _directory() if directory is None else Path(directory)
         if _path(directory, "receipt", run_id).exists():
@@ -123,11 +122,24 @@ def main(argv=None, *, output=None, clock=None, directory=None, transport=None,
             try:
                 checkpoint()
                 print("[1/3] 正在采集最新最多3条…", file=output, flush=True)
-                tweets, source_evidence = source_fetch(token, transport, clock)
+                def save_primary(tweets, source):
+                    batch._save(_path(directory, "source", run_id), _safe({
+                        "schema_version": 1, "plan_id": run_id, "mode": "MANUAL",
+                        "status": "CONTEXT_PENDING", "tweets": tweets, "source": source}, secrets))
+                    receipt["captured_items"] = len(tweets)
+                    checkpoint()
+
+                if source_fetch is None:
+                    tweets, source_evidence = fetch_three(token, transport, clock,
+                        allow_primary_only=True, source_checkpoint=save_primary)
+                else:
+                    tweets, source_evidence = source_fetch(token, transport, clock)
                 _safe([tweets, source_evidence], secrets)
                 if not isinstance(tweets, list) or len(tweets) > 3:
                     raise _Failure("MANUAL_TEST_SOURCE_COUNT_INVALID")
-                receipt.update(source=source_evidence, captured_items=len(tweets))
+                receipt.update(source=source_evidence, captured_items=len(tweets),
+                               context_fallback_items=sum(isinstance(tweet.get("context"), dict)
+                                   and tweet["context"].get("context_unavailable") is True for tweet in tweets))
                 results, evidence = [], {}
                 if tweets:
                     packed, index_to_id = batch._pack(tweets)

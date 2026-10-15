@@ -5,8 +5,11 @@ from datetime import datetime, timezone
 from email.message import Message
 import json
 from pathlib import Path
+import socket
+import ssl
 import unittest
 from unittest.mock import patch
+from urllib.error import HTTPError, URLError
 
 from scripts import one_shot_source as source
 
@@ -71,6 +74,80 @@ def official_embed(curated):
 
 
 class OneShotSourceTests(unittest.TestCase):
+    def test_primary_only_fallback_is_per_item_and_keeps_successful_context(self):
+        transport = self.transport()
+        transport.responses[2] = URLError(TimeoutError(SECRET))
+        tweets, evidence = source.fetch_three(SECRET, transport, lambda: NOW, allow_primary_only=True)
+        by_id = {tweet['id']: tweet for tweet in tweets}
+        self.assertEqual(by_id[self.rows[1]['tweetId']]['context'], {'context_unavailable': True})
+        self.assertEqual(by_id[self.rows[1]['tweetId']]['text'], self.rows[1]['text'])
+        self.assertIn('poll', by_id[self.rows[0]['tweetId']]['context'])
+        self.assertEqual(evidence['context_errors_by_id'],
+                         {self.rows[1]['tweetId']: 'ONE_SHOT_EMBED_TIMEOUT'})
+        self.assertEqual((evidence['official_context_attempts'], evidence['official_context_gets'],
+                          evidence['context_fallback_count'], len(transport.calls)), (3, 2, 1, 4))
+        self.assertNotIn(SECRET, json.dumps((tweets, evidence)))
+
+    def test_safe_network_error_categories_and_all_contexts_unavailable(self):
+        tls = ssl.SSLError(SECRET)
+        tls.reason = 'UNEXPECTED_EOF_WHILE_READING'
+        errors = [(TimeoutError(SECRET), 'TIMEOUT'),
+                  (URLError(TimeoutError(SECRET)), 'TIMEOUT'),
+                  (URLError(socket.gaierror(-2, SECRET)), 'DNS_FAILED'),
+                  (ConnectionResetError(SECRET), 'CONNECTION_FAILED'),
+                  (URLError(tls), 'TLS_PEER_CLOSED'),
+                  (ssl.SSLCertVerificationError(SECRET), 'TLS_CERTIFICATE_FAILED'),
+                  (HTTPError('https://example.invalid', 429, SECRET, {}, None), 'HTTP_429')]
+        for error, suffix in errors:
+            with self.subTest(suffix=suffix):
+                transport = Transport([Response(self.rows, status=201), error, error, error])
+                tweets, evidence = source.fetch_three(SECRET, transport, lambda: NOW, allow_primary_only=True)
+                self.assertEqual(len(tweets), 3)
+                self.assertTrue(all(tweet['context'] == {'context_unavailable': True} for tweet in tweets))
+                self.assertEqual(set(evidence['context_errors_by_id'].values()), {'ONE_SHOT_EMBED_' + suffix})
+                self.assertEqual(len(transport.calls), 4)
+                self.assertNotIn(SECRET, json.dumps((tweets, evidence)))
+
+    def test_missing_quote_or_unusable_supplement_discards_partial_context(self):
+        for replacement in (Response(b'{'), Response({}), Response(dict(self.embeds[1], quoted_tweet=None)),
+                            Response(dict(self.embeds[1], created_at=None))):
+            transport = self.transport()
+            transport.responses[2] = replacement
+            tweets, evidence = source.fetch_three(SECRET, transport, lambda: NOW, allow_primary_only=True)
+            self.assertEqual(tweets[1]['context'], {'context_unavailable': True})
+            self.assertEqual(evidence['context_fallback_count'], 1)
+
+    def test_primary_conflicts_and_secret_reflection_never_use_fallback(self):
+        for changes in ({'id_str': '123'}, {'text': 'Different primary text'},
+                        {'created_at': '2026-10-10T05:22:48Z'},
+                        {'user': {'id_str': '123', 'screen_name': 'thsottiaux'}}, {'text': SECRET}):
+            transport = self.transport()
+            transport.responses[1] = Response(dict(self.embeds[0], **changes))
+            with self.assertRaises(source.OneShotSourceError):
+                source.fetch_three(SECRET, transport, lambda: NOW, allow_primary_only=True)
+            self.assertEqual(len(transport.calls), 2)
+
+    def test_checkpoint_precedes_context_requests_and_preserves_full_primary(self):
+        transport = self.transport()
+        saved = []
+        def checkpoint(tweets, evidence):
+            self.assertEqual(len(transport.calls), 1)
+            self.assertEqual(len(tweets), 3)
+            self.assertEqual([item['text'] for item in tweets], [row['text'] for row in reversed(self.rows)])
+            self.assertTrue(all('context' not in item for item in tweets))
+            saved.append(evidence)
+        source.fetch_three(SECRET, transport, lambda: NOW, allow_primary_only=True, source_checkpoint=checkpoint)
+        self.assertEqual(len(saved), 1)
+        self.assertEqual(saved[0]['delivered_count'], 3)
+
+    def test_checkpoint_failure_does_not_trigger_context_or_retry(self):
+        transport = self.transport()
+        def fail(*_):
+            raise OSError('synthetic disk failure')
+        with self.assertRaises(OSError):
+            source.fetch_three(SECRET, transport, lambda: NOW, allow_primary_only=True, source_checkpoint=fail)
+        self.assertEqual(len(transport.calls), 1)
+
     def setUp(self):
         self.rows = json.loads((ROOT / "tests/fixtures/source-items.json").read_text(encoding="utf-8"))
         enriched = json.loads((ROOT / "tests/fixtures/source-context.json").read_text(encoding="utf-8"))

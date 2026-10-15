@@ -9,17 +9,34 @@ import shutil
 import unittest
 from unittest.mock import patch
 from uuid import uuid4
+from urllib.error import URLError
 
 from monitor.credentials import ProjectCredentials
 from scripts import manual_test as probe
 from tests.test_classification_setup_probe import FakeResponse, FakeTransport
 from tests.test_smtp_transport import FakeFactory, FakeSession
+from tests.test_one_shot_source import Response, Transport
+from tests.test_background_monitor import model_response
 
 ROOT = Path(os.environ.get('RESET_MONITOR_TEST_ROOT',
                 str(Path(__file__).resolve().parents[1] / 'runtime/test-tmp'))).resolve()
 
 
 class ManualTestEntryTests(unittest.TestCase):
+    def test_actual_manual_source_uses_same_primary_only_fallback_and_mail_note(self):
+        rows = json.loads((Path(__file__).resolve().parents[1] / 'tests/fixtures/source-items.json').read_text('utf-8'))
+        transport = Transport([Response(rows, status=201)] +
+                              [URLError(TimeoutError('synthetic unavailable')) for _ in range(3)] +
+                              [model_response(('IRRELEVANT',) * 3)])
+        run_id = 'manual-test-' + uuid4().hex
+        self.assertEqual(self.run_manual(run_id, source_fetch=None, transport=transport), 0)
+        result = json.loads(probe._path(self.directory, 'result', run_id).read_text('utf-8'))
+        self.assertEqual(len(result['results']), 3)
+        self.assertEqual(result['notification']['body'].count('分析依据：仅依据主文分析'), 3)
+        self.assertTrue(probe._path(self.directory, 'source', run_id).exists())
+        self.assertEqual(self.run_manual(run_id, source_fetch=None, transport=transport), 2)
+        self.assertEqual((len(transport.calls), len(self.factory.calls)), (5, 1))
+
     def setUp(self):
         self.stack = ExitStack()
         self.addCleanup(self.stack.close)

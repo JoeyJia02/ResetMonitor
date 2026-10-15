@@ -32,7 +32,7 @@ BEIJING = timezone(timedelta(hours=8))
 SLOTS = ((8, 0), (13, 0), (20, 0))
 _ID = re.compile(r"[1-9][0-9]{0,19}\Z")
 _RESULTS = frozenset({"POST_RESET", "PRE_RESET", "POSSIBLE_RESET"})
-CODE_VERSION = "20261012-every-slot-mail"
+CODE_VERSION = "20261015-context-fallback"
 
 
 class BackgroundError(ValueError):
@@ -106,7 +106,7 @@ def _readable_receipt(path):
         value = json.loads(path.read_text(encoding="utf-8"))
         summary = {key: value[key] for key in ("run_id", "status", "captured_items",
                                               "new_items", "analyzed_items", "relevant_items", "smtp_status")}
-        summary.update({key: value[key] for key in ("stage", "error_code") if key in value})
+        summary.update({key: value[key] for key in ("stage", "error_code", "context_fallback_items") if key in value})
         return summary
     except (OSError, ValueError, TypeError, KeyError):
         return {"status": "BACKGROUND_RECEIPT_UNAVAILABLE"}
@@ -154,9 +154,21 @@ def run_slot(now, *, root=None, credential_loader=None, source_fetch=None,
             secrets = (credentials.apify_token, credentials.deepseek_api_key, credentials.smtp_password)
             record["stage"] = "TRANSPORT_BUILD"
             transport = _build_transport() if transport is None else transport
-            fetch = fetch_three if source_fetch is None else source_fetch
             record["stage"] = "SOURCE_FETCH"
-            tweets, source = fetch(credentials.apify_token, transport, lambda: now)
+
+            def save_primary(tweets, source):
+                record["stage"] = "SOURCE_SAVE"
+                value = _safe({"schema_version": 1, "run_id": run_id, "status": "CONTEXT_PENDING",
+                               "tweets": tweets, "source": source}, secrets)
+                _save(root / (run_id + ".source.json"), value)
+                record.update(captured_items=len(tweets), stage="SOURCE_CONTEXT")
+                _save(receipt_path, record)
+
+            if source_fetch is None:
+                tweets, source = fetch_three(credentials.apify_token, transport, lambda: now,
+                                             allow_primary_only=True, source_checkpoint=save_primary)
+            else:
+                tweets, source = source_fetch(credentials.apify_token, transport, lambda: now)
             record["stage"] = "SOURCE_VALIDATE"
             _safe([tweets, source], secrets)
             if (not isinstance(tweets, list) or len(tweets) > 3
@@ -165,7 +177,9 @@ def run_slot(now, *, root=None, credential_loader=None, source_fetch=None,
                     or len({tweet["id"] for tweet in tweets}) != len(tweets)):
                 raise BackgroundError("BACKGROUND_SOURCE_INVALID")
             pending = [tweet for tweet in tweets if tweet["id"] not in seen]
-            record.update(captured_items=len(tweets), new_items=len(pending))
+            record.update(captured_items=len(tweets), new_items=len(pending),
+                          context_fallback_items=sum(isinstance(tweet.get("context"), dict)
+                              and tweet["context"].get("context_unavailable") is True for tweet in tweets))
             # Preserve the source before marking it consumed; a crash still
             # leaves local review data without silently re-paying next slot.
             record["stage"] = "SOURCE_SAVE"

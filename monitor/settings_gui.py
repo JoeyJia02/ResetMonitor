@@ -107,8 +107,11 @@ def run_full_chain(events, run_id):
                 final = "本次模型预算校验未通过，已停止，未启动新的采集或分析。已保存的结果继续保留。"
             elif line.startswith("CREDENTIAL_STORE_") or line == "PROJECT_CREDENTIAL_INPUT_REQUIRED":
                 final = "无法读取已保存的凭据，请重新填写并保存。"
-            elif re.fullmatch(r"FAILED n=[1-3] email=FAILED SMTP_TLS_OR_AUTH_UNSUPPORTED", line):
-                final = "分析已完成，但 QQ 邮箱安全连接失败。结果已保存，请勿重新采集或分析。"
+            elif re.fullmatch(r"FAILED n=[0-3] email=FAILED (?:SMTP_TLS_OR_AUTH_UNSUPPORTED|"
+                              r"SMTP_TLS_VERIFICATION_FAILED|SMTP_(?:CONNECT|EHLO|STARTTLS|AUTH|"
+                              r"MAIL|RCPT|DATA_READY)_(?:TLS_[A-Z_]+|UNSUPPORTED))", line):
+                final = ("本轮没有可分析推文" if line.startswith("FAILED n=0 ") else "分析已完成") + \
+                    "，但 QQ 邮箱安全连接失败。结果已保存，请勿重新采集或分析。"
             elif re.match(r"^(FAILED|UNKNOWN) ", line):
                 final = "测试未完成，结果已保存。请告诉 Codex 本次测试失败。"
         process.stdout.close()

@@ -21,6 +21,19 @@ def tweet(identifier="2109132167112782291", **changes):
 
 
 class ModelPayloadTests(unittest.TestCase):
+    def test_primary_only_marker_excludes_all_incomplete_context_and_diagnostics(self):
+        context = {'context_unavailable': True, 'quoted_tweet': {'text': 'DO_NOT_USE_PARTIAL_QUOTE'},
+                   'poll': {'options': ['DO_NOT_USE_PARTIAL_POLL']}, 'error_code': 'LOCAL_DIAGNOSTIC'}
+        original = tweet(context=context)
+        packed, _ = pack_model_tweets([original, tweet('102', context={'quoted_tweet': {'text': 'VALID_QUOTE'}})])
+        self.assertEqual(packed[0], {'id': '1', 'text': original['text'], 'created_at': TIME,
+                                    'context_unavailable': True})
+        self.assertEqual(packed[1]['quoted_tweet'], {'text': 'VALID_QUOTE'})
+        self.assertNotIn('LOCAL_DIAGNOSTIC', json.dumps(packed))
+        self.assertNotIn('DO_NOT_USE', json.dumps(packed))
+        for value in ('true', 1, None):
+            self.assert_invalid([tweet(context={'context_unavailable': value})])
+
     def test_upgrade_keeps_original_semantics_new_evidence_and_basis(self):
         context = {'original_context':{'quoted_tweet':{'text':'ORIGINAL_QUOTE'},
                     'poll':{'options':['ORIGINAL_POLL_A','ORIGINAL_POLL_B'],'votes':[1,2]}, 'likes':99},

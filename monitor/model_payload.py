@@ -136,6 +136,11 @@ def _semantic_context(value, *, depth=0, seen=None):
     seen.add(marker)
     try:
         result = {}
+        if 'context_unavailable' in context:
+            if type(context['context_unavailable']) is not bool:
+                _invalid()
+            if context['context_unavailable']:
+                return {'context_unavailable': True}
         if context_text is not None:
             result['context_text'] = context_text
         quote = _choose(context, 'quoted_tweet', 'quotedTweet')

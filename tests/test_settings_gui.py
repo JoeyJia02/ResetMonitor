@@ -185,6 +185,41 @@ class SettingsGUITests(unittest.TestCase):
 
 
 class GUIRunnerTests(unittest.TestCase):
+    def test_detailed_tls_failure_preserves_saved_result_guidance(self):
+        for count, code in ((0, "SMTP_CONNECT_TLS_PEER_CLOSED"),
+                            (3, "SMTP_AUTH_TLS_ERROR"),
+                            (3, "SMTP_CONNECT_TLS_CERTIFICATE_INVALID")):
+            with self.subTest(count=count, code=code):
+                events = queue.Queue()
+                process = type('Child', (), {
+                    'stdout': io.StringIO(f'FAILED n={count} email=FAILED {code}\n'),
+                    'wait': lambda _: 1})()
+                with patch('monitor.settings_gui.subprocess.Popen', return_value=process) as start:
+                    run_full_chain(events, RUN_ID)
+                self.assertEqual(start.call_count, 1)
+                done = events.get_nowait()
+                self.assertIn('结果已保存', done[1])
+                self.assertIn('安全连接失败', done[1])
+                self.assertFalse(done[2])
+
+    def test_unsupported_smtp_phase_preserves_saved_result_guidance(self):
+        for count, code in ((0, "SMTP_AUTH_UNSUPPORTED"),
+                            (3, "SMTP_AUTH_UNSUPPORTED"),
+                            (3, "SMTP_STARTTLS_UNSUPPORTED")):
+            with self.subTest(count=count, code=code):
+                events = queue.Queue()
+                process = type('Child', (), {
+                    'stdout': io.StringIO(f'FAILED n={count} email=FAILED {code}\n'),
+                    'wait': lambda _: 1})()
+                with patch('monitor.settings_gui.subprocess.Popen', return_value=process) as start:
+                    run_full_chain(events, RUN_ID)
+                self.assertEqual(start.call_count, 1)
+                done = events.get_nowait()
+                self.assertIn('结果已保存', done[1])
+                self.assertIn('请勿重新采集或分析', done[1])
+                self.assertIn('本轮没有可分析推文' if count == 0 else '分析已完成', done[1])
+                self.assertFalse(done[2])
+
     def test_saved_analysis_email_connection_failure_is_reported_without_rerun(self):
         events = queue.Queue()
         process = type('Child', (), {'stdout':io.StringIO('FAILED n=3 email=FAILED SMTP_TLS_OR_AUTH_UNSUPPORTED\n'),

@@ -28,6 +28,17 @@ def row(identifier="1", label="POST_RESET", **updates):
 
 
 class PromptContractTests(unittest.TestCase):
+    def test_primary_only_input_keeps_time_text_and_shared_missing_context_instruction(self):
+        primary = dict(TWEET, context={'context_unavailable': True})
+        for body in (batch._request_body([primary], NOW), chain._body([primary], NOW)):
+            messages = json.loads(body)['messages']
+            self.assertEqual(messages[0]['content'], SYSTEM_PROMPT)
+            self.assertIn('不得猜测', messages[0]['content'])
+            self.assertIn('仅依据主文分析', messages[0]['content'])
+            submitted = json.loads(messages[1]['content'])['tweets'][0]
+            self.assertEqual(submitted, {'id': '1', 'created_at': TWEET['created_at'],
+                                         'text': TWEET['text'], 'context_unavailable': True})
+
     def test_single_and_batch_entries_use_same_prompt_and_complete_time_context(self):
         messages = [build_prompt(TWEET, NOW, "Asia/Shanghai")]
         for body in (batch._request_body([TWEET], NOW), chain._body([TWEET], NOW)):

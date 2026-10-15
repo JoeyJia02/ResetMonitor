@@ -129,6 +129,10 @@ def _notification(tweets, results, evidence, now, run_id=PLAN_ID, *, background=
     lines.append("本轮分析条数：" + str(len(tweets)))
     if background:
         lines.append("涉及额外重置条数：" + str(relevant_count))
+    fallback_count = sum(isinstance(tweet.get("context"), dict)
+                         and tweet["context"].get("context_unavailable") is True for tweet in tweets)
+    if fallback_count:
+        lines.append("本轮有 " + str(fallback_count) + " 条推文的上下文补充失败，已仅依据主文分析。")
     lines.append("")
     labels = {"POST_RESET": "已确认额外重置", "PRE_RESET": "额外重置预告",
               "POSSIBLE_RESET": "疑似额外重置", "IRRELEVANT": "与额外重置无关"}
@@ -137,6 +141,9 @@ def _notification(tweets, results, evidence, now, run_id=PLAN_ID, *, background=
         result = by_id[tweet["id"]]
         lines.extend([str(index) + ". " + labels[result["label"]] + "（" + result["label"] + "）",
                       "发布时间：" + tweet["created_at"], "原文：" + tweet["text"],
+                      *(["分析依据：仅依据主文分析（上下文补充失败）。"]
+                         if isinstance(tweet.get("context"), dict)
+                         and tweet["context"].get("context_unavailable") is True else []),
                       "重置时间：" + (result["reset_time"] or "时间不明"),
                       "分析：" + result["reason"], "链接：" + tweet["url"], ""])
     if not tweets:

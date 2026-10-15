@@ -26,6 +26,12 @@ entry was tested. Never perform paid API or SMTP calls as an offline test.
 
 ### Notification outcomes
 
+- The normal background and desktop manual paths may classify a validated full
+  primary tweet when its context supplement is unavailable. Pass an explicit
+  context_unavailable marker to the model, label primary-only analysis in mail,
+  and retain successful context on other tweets. Keep each context GET single
+  attempt and the batch at one model request/one email. Never use this fallback
+  for contradictory primary identity, timestamp or text, or reflected secrets.
 - The installed background sends one summary for every successfully completed
   slot: include all new classifications, including IRRELEVANT, and send a status
   summary when there are no new tweets. Deduplication still skips repeated model
